@@ -41,6 +41,10 @@ public partial class MainForm : Form
         NavigateTo(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
     }
 
+    private ContextMenuStrip _fileListContextMenu = null!;
+    private ContextMenuStrip _treeContextMenu = null!;
+    private ContextMenuStrip _backgroundContextMenu = null!;
+
     private void InitializeComponents()
     {
         Text = "文件管理器";
@@ -48,6 +52,8 @@ public partial class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(800, 600);
         KeyPreview = true;
+
+        InitializeContextMenus();
 
         var toolbar = new ToolStrip
         {
@@ -143,6 +149,7 @@ public partial class MainForm : Form
         _fileListView.SmallImageList = _fileIcons;
         _fileListView.SelectedIndexChanged += FileListView_SelectedIndexChanged;
         _fileListView.DoubleClick += FileListView_DoubleClick;
+        _fileListView.MouseClick += FileListView_MouseClick;
 
         _treeView = new TreeView
         {
@@ -154,6 +161,7 @@ public partial class MainForm : Form
         };
         _treeView.AfterSelect += TreeView_AfterSelect;
         _treeView.BeforeExpand += TreeView_BeforeExpand;
+        _treeView.NodeMouseClick += TreeView_NodeMouseClick;
 
         var treePanel = new Panel { Dock = DockStyle.Fill };
         treePanel.Controls.Add(_treeView);
@@ -185,6 +193,274 @@ public partial class MainForm : Form
         Controls.AddRange(new Control[] { _mainSplitter, toolbar, _statusLabel });
 
         AddSystemIcons();
+    }
+
+    private void InitializeContextMenus()
+    {
+        _fileListContextMenu = new ContextMenuStrip();
+        _fileListContextMenu.Items.Add("打开", null, (_, _) => OpenSelectedItem());
+        _fileListContextMenu.Items.Add(new ToolStripSeparator());
+        _fileListContextMenu.Items.Add("复制", null, (_, _) => CopySelectedItem());
+        _fileListContextMenu.Items.Add("剪切", null, (_, _) => CutSelectedItem());
+        _fileListContextMenu.Items.Add(new ToolStripSeparator());
+        _fileListContextMenu.Items.Add("复制路径", null, (_, _) => CopySelectedItemPath());
+        _fileListContextMenu.Items.Add(new ToolStripSeparator());
+        _fileListContextMenu.Items.Add("重命名", null, (_, _) => RenameSelectedItem());
+        _fileListContextMenu.Items.Add("删除", null, (_, _) => DeleteSelectedItem());
+        _fileListContextMenu.Items.Add(new ToolStripSeparator());
+        _fileListContextMenu.Items.Add("属性", null, (_, _) => ShowSelectedItemProperties());
+
+        _treeContextMenu = new ContextMenuStrip();
+        _treeContextMenu.Items.Add("展开全部", null, (_, _) => ExpandAllTreeNode());
+        _treeContextMenu.Items.Add("折叠全部", null, (_, _) => CollapseAllTreeNode());
+        _treeContextMenu.Items.Add(new ToolStripSeparator());
+        _treeContextMenu.Items.Add("新建文件夹", null, (_, _) => CreateNewFolder(GetTreeViewSelectedPath()));
+        _treeContextMenu.Items.Add(new ToolStripSeparator());
+        _treeContextMenu.Items.Add("刷新", null, (_, _) => RefreshTreeView());
+
+        _backgroundContextMenu = new ContextMenuStrip();
+        _backgroundContextMenu.Items.Add("新建文件夹", null, (_, _) => CreateNewFolder(_currentPath));
+        _backgroundContextMenu.Items.Add(new ToolStripSeparator());
+        _backgroundContextMenu.Items.Add("在终端中打开", null, (_, _) => OpenTerminal());
+        _backgroundContextMenu.Items.Add(new ToolStripSeparator());
+        _backgroundContextMenu.Items.Add("刷新", null, (_, _) => RefreshFileList());
+    }
+
+    private void FileListView_MouseClick(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Right) return;
+
+        var hitTest = _fileListView.HitTest(e.Location);
+        if (hitTest.Item != null)
+        {
+            if (!_fileListView.SelectedItems.Contains(hitTest.Item))
+            {
+                _fileListView.SelectedItems.Clear();
+                hitTest.Item.Selected = true;
+            }
+            _fileListContextMenu.Show(_fileListView, e.Location);
+        }
+        else
+        {
+            _fileListView.SelectedItems.Clear();
+            _backgroundContextMenu.Show(_fileListView, e.Location);
+        }
+    }
+
+    private void TreeView_NodeMouseClick(object? sender, TreeNodeMouseClickEventArgs e)
+    {
+        if (e.Button != MouseButtons.Right) return;
+        _treeView.SelectedNode = e.Node;
+        _treeContextMenu.Show(_treeView, e.Location);
+    }
+
+    private void OpenSelectedItem()
+    {
+        if (_fileListView.SelectedItems.Count == 0) return;
+        var path = _fileListView.SelectedItems[0].Tag as string;
+        if (path == null) return;
+
+        if (Directory.Exists(path))
+        {
+            NavigateTo(path);
+        }
+        else if (File.Exists(path))
+        {
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"无法打开文件: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+    }
+
+    private void CopySelectedItem()
+    {
+        var path = GetSelectedFilePath();
+        if (path == null) return;
+        Clipboard.SetFileDropList(new System.Collections.Specialized.StringCollection { path });
+    }
+
+    private void CutSelectedItem()
+    {
+        var path = GetSelectedFilePath();
+        if (path == null) return;
+
+        var files = new System.Collections.Specialized.StringCollection { path };
+        byte[] moveEffect = [2, 0, 0, 0];
+        var dropEffect = new MemoryStream();
+        dropEffect.Write(moveEffect, 0, moveEffect.Length);
+        var data = new DataObject(DataFormats.FileDrop, files);
+        data.SetData("Preferred DropEffect", dropEffect);
+        Clipboard.SetDataObject(data, true);
+    }
+
+    private void CopySelectedItemPath()
+    {
+        var path = GetSelectedFilePath();
+        if (path != null)
+            Clipboard.SetText(path);
+    }
+
+    private void RenameSelectedItem()
+    {
+        if (_fileListView.SelectedItems.Count == 0) return;
+        var oldPath = _fileListView.SelectedItems[0].Tag as string;
+        if (oldPath == null) return;
+
+        var oldName = Path.GetFileName(oldPath);
+        var dialog = new Form
+        {
+            Text = "重命名",
+            Size = new Size(400, 130),
+            StartPosition = FormStartPosition.CenterParent,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false
+        };
+        var label = new Label { Text = "新名称:", Location = new Point(12, 15), AutoSize = true };
+        var textBox = new TextBox { Text = oldName, Location = new Point(12, 35), Width = 360 };
+        var okBtn = new Button { Text = "确定", DialogResult = DialogResult.OK, Location = new Point(200, 65) };
+        var cancelBtn = new Button { Text = "取消", DialogResult = DialogResult.Cancel, Location = new Point(290, 65) };
+        dialog.Controls.AddRange(new Control[] { label, textBox, okBtn, cancelBtn });
+        dialog.AcceptButton = okBtn;
+        dialog.CancelButton = cancelBtn;
+        textBox.SelectAll();
+        textBox.Focus();
+
+        if (dialog.ShowDialog(this) != DialogResult.OK) return;
+        var newName = textBox.Text.Trim();
+        if (string.IsNullOrEmpty(newName) || newName == oldName) return;
+
+        try
+        {
+            var dir = Path.GetDirectoryName(oldPath)!;
+            var newPath = Path.Combine(dir, newName);
+            if (Directory.Exists(oldPath))
+                Directory.Move(oldPath, newPath);
+            else
+                File.Move(oldPath, newPath);
+            LoadFiles(_currentPath!);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"重命名失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void DeleteSelectedItem()
+    {
+        var path = GetSelectedFilePath();
+        if (path == null) return;
+
+        var name = Path.GetFileName(path);
+        var result = MessageBox.Show($"确定要删除 \"{name}\" 吗？", "确认删除",
+            MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+        if (result != DialogResult.Yes) return;
+
+        try
+        {
+            if (Directory.Exists(path))
+                Directory.Delete(path, recursive: true);
+            else
+                File.Delete(path);
+            ClearPreview();
+            LoadFiles(_currentPath!);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"删除失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void ShowSelectedItemProperties()
+    {
+        var path = GetSelectedFilePath();
+        if (path == null) return;
+
+        ShellExecute(IntPtr.Zero, "properties", path, "", "", SW_SHOW);
+    }
+
+    private void CreateNewFolder(string? parentPath)
+    {
+        if (parentPath == null || !Directory.Exists(parentPath)) return;
+
+        var folderName = "新建文件夹";
+        var fullPath = Path.Combine(parentPath, folderName);
+        int counter = 1;
+        while (Directory.Exists(fullPath))
+        {
+            fullPath = Path.Combine(parentPath, $"{folderName} ({counter})");
+            counter++;
+        }
+
+        try
+        {
+            Directory.CreateDirectory(fullPath);
+            if (parentPath == _currentPath)
+                LoadFiles(_currentPath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"创建文件夹失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void OpenTerminal()
+    {
+        if (_currentPath == null) return;
+        try
+        {
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo("cmd.exe")
+            {
+                WorkingDirectory = _currentPath,
+                UseShellExecute = true
+            });
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"无法打开终端: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private void RefreshFileList()
+    {
+        if (_currentPath != null)
+            LoadFiles(_currentPath);
+    }
+
+    private void RefreshTreeView()
+    {
+        var selectedPath = _treeView.SelectedNode?.Tag as string;
+        LoadDrives();
+        if (selectedPath != null)
+            SelectTreeNode(selectedPath);
+    }
+
+    private void ExpandAllTreeNode()
+    {
+        if (_treeView.SelectedNode != null)
+            _treeView.SelectedNode.ExpandAll();
+    }
+
+    private void CollapseAllTreeNode()
+    {
+        if (_treeView.SelectedNode != null)
+            _treeView.SelectedNode.Collapse();
+    }
+
+    private string? GetSelectedFilePath()
+    {
+        if (_fileListView.SelectedItems.Count == 0) return null;
+        return _fileListView.SelectedItems[0].Tag as string;
+    }
+
+    private string? GetTreeViewSelectedPath()
+    {
+        return _treeView.SelectedNode?.Tag as string;
     }
 
     private void AddSystemIcons()
@@ -661,4 +937,10 @@ public partial class MainForm : Form
 
     private const uint SHGFI_ICON = 0x100;
     private const uint SHGFI_SMALLICON = 0x1;
+    private const uint SHGFI_LARGEICON = 0x0;
+
+    private const int SW_SHOW = 5;
+
+    [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr ShellExecute(IntPtr hwnd, string lpOperation, string lpFile, string? lpParameters, string? lpDirectory, int nShowCmd);
 }
