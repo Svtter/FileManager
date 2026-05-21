@@ -1,0 +1,67 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Publish (framework-dependent)
+        run: dotnet publish --configuration Release --runtime win-x64 --self-contained false -p:PublishSingleFile=true -p:DebugType=none -p:StripSymbols=true -o publish-fdd
+        env:
+          DOTNET_ROLL_FORWARD: Disable
+
+      - name: Publish (self-contained)
+        run: dotnet publish --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:EnableCompressionInSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -p:DebugType=none -o publish-sc
+
+      - name: Debug output sizes
+        shell: pwsh
+        run: |
+          Write-Host "=== framework-dependent ==="
+          Get-ChildItem publish-fdd -Recurse | ForEach-Object { Write-Host "$($_.Length) $($_.FullName)" }
+          Write-Host "Total FDD: $((Get-ChildItem publish-fdd -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB) MB"
+          Write-Host "=== self-contained ==="
+          $scTotal = (Get-ChildItem publish-sc -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB
+          Write-Host "Total SC: $scTotal MB"
+
+      - name: Create archives
+        run: |
+          Compress-Archive -Path publish-fdd/* -DestinationPath FileManager-win-x64-framework-dependent.zip
+          Compress-Archive -Path publish-sc/* -DestinationPath FileManager-win-x64-self-contained.zip
+
+      - name: Generate changelog
+        id: changelog
+        shell: bash
+        run: |
+          TAG=${GITHUB_REF#refs/*/}
+          echo "tag=$TAG" >> $GITHUB_OUTPUT
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: FileManager ${{ steps.changelog.outputs.tag }}
+          draft: false
+          prerelease: false
+          files: |
+            FileManager-win-x64-framework-dependent.zip
+            FileManager-win-x64-self-contained.zip
+          body: |
+            ## Downloads
+            - **framework-dependent** (~5MB): 需要 [.NET 8 运行时](https://dotnet.microsoft.com/download/dotnet/8.0)
+            - **self-contained** (~50-60MB): 无需安装运行时，开箱即用
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
