@@ -52,6 +52,7 @@ public partial class MainForm : Form
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(800, 600);
         KeyPreview = true;
+        Icon = GenerateAppIcon();
 
         InitializeContextMenus();
 
@@ -357,16 +358,13 @@ public partial class MainForm : Form
         if (path == null) return;
 
         var name = Path.GetFileName(path);
-        var result = MessageBox.Show($"确定要删除 \"{name}\" 吗？", "确认删除",
+        var result = MessageBox.Show($"确定要将 \"{name}\" 移到回收站吗？", "确认删除",
             MessageBoxButtons.YesNo, MessageBoxIcon.Question);
         if (result != DialogResult.Yes) return;
 
         try
         {
-            if (Directory.Exists(path))
-                Directory.Delete(path, recursive: true);
-            else
-                File.Delete(path);
+            MoveToRecycleBin(path);
             ClearPreview();
             LoadFiles(_currentPath!);
         }
@@ -374,6 +372,19 @@ public partial class MainForm : Form
         {
             MessageBox.Show($"删除失败: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
+    }
+
+    private static void MoveToRecycleBin(string path)
+    {
+        var shFileOp = new SHFILEOPSTRUCT
+        {
+            wFunc = FO_DELETE,
+            pFrom = path + '\0',
+            fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT
+        };
+        var result = SHFileOperation(ref shFileOp);
+        if (result != 0)
+            throw new IOException($"SHFileOperation 返回错误代码: {result}");
     }
 
     private void ShowSelectedItemProperties()
@@ -941,6 +952,75 @@ public partial class MainForm : Form
 
     private const int SW_SHOW = 5;
 
+    private const uint FO_DELETE = 3;
+    private const uint FOF_ALLOWUNDO = 0x40;
+    private const uint FOF_NOCONFIRMATION = 0x10;
+    private const uint FOF_SILENT = 0x4;
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct SHFILEOPSTRUCT
+    {
+        public IntPtr hwnd;
+        public uint wFunc;
+        public string pFrom;
+        public string pTo;
+        public uint fFlags;
+        [MarshalAs(UnmanagedType.Bool)]
+        public bool fAnyOperationsAborted;
+        public IntPtr hNameMappings;
+        public string lpszProgressTitle;
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
+
     [DllImport("shell32.dll", CharSet = CharSet.Auto)]
     private static extern IntPtr ShellExecute(IntPtr hwnd, string lpOperation, string lpFile, string? lpParameters, string? lpDirectory, int nShowCmd);
+
+    private static Icon GenerateAppIcon()
+    {
+        using var bmp = new Bitmap(256, 256, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        using var g = Graphics.FromImage(bmp);
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        g.Clear(Color.Transparent);
+
+        var folderRect = new Rectangle(30, 50, 196, 150);
+        var tabRect = new Rectangle(30, 35, 80, 25);
+
+        using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+        {
+            path.AddRectangle(tabRect);
+            g.FillPath(new SolidBrush(Color.FromArgb(255, 200, 60)), path);
+        }
+
+        using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+        {
+            path.AddRectangle(folderRect);
+            g.FillPath(new SolidBrush(Color.FromArgb(255, 210, 70)), path);
+            using var pen = new Pen(Color.FromArgb(200, 160, 30), 3);
+            g.DrawPath(pen, path);
+        }
+
+        using (var pen = new Pen(Color.FromArgb(200, 160, 30), 3))
+        {
+            g.DrawRectangle(pen, tabRect);
+            g.DrawLine(pen, tabRect.X, tabRect.Bottom, tabRect.X, tabRect.Bottom);
+        }
+
+        using (var magnifier = new System.Drawing.Drawing2D.GraphicsPath())
+        {
+            magnifier.AddEllipse(130, 90, 70, 70);
+            g.FillPath(new SolidBrush(Color.FromArgb(100, 180, 255)), magnifier);
+            using var pen = new Pen(Color.FromArgb(40, 100, 200), 3);
+            g.DrawPath(pen, magnifier);
+
+            var handleStart = new Point(182, 155);
+            var handleEnd = new Point(210, 185);
+            using var handlePen = new Pen(Color.FromArgb(40, 100, 200), 5) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round };
+            g.DrawLine(handlePen, handleStart, handleEnd);
+        }
+
+        var handle = bmp.GetHicon();
+        return Icon.FromHandle(handle);
+    }
 }
