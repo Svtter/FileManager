@@ -153,7 +153,7 @@ public partial class MainForm : Form
         _fileListView.SmallImageList = _fileIcons;
         _fileListView.SelectedIndexChanged += FileListView_SelectedIndexChanged;
         _fileListView.DoubleClick += FileListView_DoubleClick;
-        _fileListView.MouseClick += FileListView_MouseClick;
+        _fileListView.MouseUp += FileListView_MouseUp;
 
         _treeView = new TreeView
         {
@@ -207,6 +207,7 @@ public partial class MainForm : Form
         _fileListContextMenu.Items.Add(new ToolStripSeparator());
         _fileListContextMenu.Items.Add("复制", null, (_, _) => CopySelectedItem());
         _fileListContextMenu.Items.Add("剪切", null, (_, _) => CutSelectedItem());
+        _fileListContextMenu.Items.Add("粘贴", null, (_, _) => PasteToCurrentDirectory());
         _fileListContextMenu.Items.Add(new ToolStripSeparator());
         _fileListContextMenu.Items.Add("复制路径", null, (_, _) => CopySelectedItemPath());
         _fileListContextMenu.Items.Add(new ToolStripSeparator());
@@ -220,10 +221,13 @@ public partial class MainForm : Form
         _treeContextMenu.Items.Add("折叠全部", null, (_, _) => CollapseAllTreeNode());
         _treeContextMenu.Items.Add(new ToolStripSeparator());
         _treeContextMenu.Items.Add("新建文件夹", null, (_, _) => CreateNewFolder(GetTreeViewSelectedPath()));
+        _treeContextMenu.Items.Add("粘贴", null, (_, _) => PasteToTreeSelectedDirectory());
         _treeContextMenu.Items.Add(new ToolStripSeparator());
         _treeContextMenu.Items.Add("刷新", null, (_, _) => RefreshTreeView());
 
         _backgroundContextMenu = new ContextMenuStrip();
+        _backgroundContextMenu.Items.Add("粘贴", null, (_, _) => PasteToCurrentDirectory());
+        _backgroundContextMenu.Items.Add(new ToolStripSeparator());
         _backgroundContextMenu.Items.Add("新建文件夹", null, (_, _) => CreateNewFolder(_currentPath));
         _backgroundContextMenu.Items.Add(new ToolStripSeparator());
         _backgroundContextMenu.Items.Add("在终端中打开", null, (_, _) => OpenTerminal());
@@ -231,7 +235,7 @@ public partial class MainForm : Form
         _backgroundContextMenu.Items.Add("刷新", null, (_, _) => RefreshFileList());
     }
 
-    private void FileListView_MouseClick(object? sender, MouseEventArgs e)
+    private void FileListView_MouseUp(object? sender, MouseEventArgs e)
     {
         if (e.Button != MouseButtons.Right) return;
 
@@ -301,6 +305,95 @@ public partial class MainForm : Form
         var data = new DataObject(DataFormats.FileDrop, files);
         data.SetData("Preferred DropEffect", dropEffect);
         Clipboard.SetDataObject(data, true);
+    }
+
+    private void PasteToDirectory(string targetDir)
+    {
+        if (!Clipboard.ContainsData(DataFormats.FileDrop)) return;
+        var dropList = Clipboard.GetData(DataFormats.FileDrop) as System.Collections.Specialized.StringCollection;
+        if (dropList == null || dropList.Count == 0) return;
+
+        bool isCut = false;
+        var dropEffect = Clipboard.GetData("Preferred DropEffect") as MemoryStream;
+        if (dropEffect != null)
+        {
+            var bytes = new byte[4];
+            dropEffect.Read(bytes, 0, 4);
+            isCut = bytes[0] == 2;
+        }
+
+        try
+        {
+            foreach (string source in dropList)
+            {
+                string name = Path.GetFileName(source);
+                string dest = Path.Combine(targetDir, name);
+
+                if (string.Equals(source, dest, StringComparison.OrdinalIgnoreCase)) continue;
+
+                dest = GetUniqueDestinationPath(dest);
+
+                if (Directory.Exists(source))
+                {
+                    if (isCut)
+                        Directory.Move(source, dest);
+                    else
+                        CopyDirectory(source, dest);
+                }
+                else if (File.Exists(source))
+                {
+                    if (isCut)
+                        File.Move(source, dest);
+                    else
+                        File.Copy(source, dest);
+                }
+            }
+
+            if (isCut)
+                Clipboard.Clear();
+
+            LoadFiles(_currentPath);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show($"粘贴失败：{ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
+        }
+    }
+
+    private static string GetUniqueDestinationPath(string dest)
+    {
+        if (!File.Exists(dest) && !Directory.Exists(dest)) return dest;
+
+        string dir = Path.GetDirectoryName(dest)!;
+        string nameWithoutExt = Path.GetFileNameWithoutExtension(dest);
+        string ext = Path.GetExtension(dest);
+
+        int count = 1;
+        string newPath;
+        do
+        {
+            newPath = Path.Combine(dir, $"{nameWithoutExt} ({count}){ext}");
+            count++;
+        } while (File.Exists(newPath) || Directory.Exists(newPath));
+
+        return newPath;
+    }
+
+    private static void CopyDirectory(string sourceDir, string destDir)
+    {
+        Directory.CreateDirectory(destDir);
+        foreach (string file in Directory.GetFiles(sourceDir))
+            File.Copy(file, Path.Combine(destDir, Path.GetFileName(file)));
+        foreach (string dir in Directory.GetDirectories(sourceDir))
+            CopyDirectory(dir, Path.Combine(destDir, Path.GetFileName(dir)));
+    }
+
+    private void PasteToCurrentDirectory() => PasteToDirectory(_currentPath);
+
+    private void PasteToTreeSelectedDirectory()
+    {
+        var path = GetTreeViewSelectedPath();
+        if (path != null) PasteToDirectory(path);
     }
 
     private void CopySelectedItemPath()
@@ -910,6 +1003,21 @@ public partial class MainForm : Form
         if (keyData == (Keys.Alt | Keys.Up))
         {
             GoUp();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.C))
+        {
+            CopySelectedItem();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.X))
+        {
+            CutSelectedItem();
+            return true;
+        }
+        if (keyData == (Keys.Control | Keys.V))
+        {
+            PasteToCurrentDirectory();
             return true;
         }
         return base.ProcessCmdKey(ref msg, keyData);
