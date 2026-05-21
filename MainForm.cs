@@ -51,7 +51,7 @@ public partial class MainForm : Form
     private void InitializeComponents()
     {
         Text = "文件管理器";
-        Size = new Size(1200, 800);
+        Size = new Size(1400, 900);
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(800, 600);
         KeyPreview = true;
@@ -174,7 +174,6 @@ public partial class MainForm : Form
         {
             Dock = DockStyle.Fill,
             Orientation = Orientation.Horizontal,
-            SplitterDistance = 400,
             Panel1MinSize = 200,
             Panel2MinSize = 150,
             FixedPanel = FixedPanel.Panel2,
@@ -186,7 +185,6 @@ public partial class MainForm : Form
         _mainSplitter = new SplitContainer
         {
             Dock = DockStyle.Fill,
-            SplitterDistance = 250,
             Panel1MinSize = 150,
             FixedPanel = FixedPanel.Panel1,
             BackColor = SystemColors.Control
@@ -195,6 +193,9 @@ public partial class MainForm : Form
         _mainSplitter.Panel2.Controls.Add(_previewSplitter);
 
         Controls.AddRange(new Control[] { _mainSplitter, toolbar, _statusLabel });
+
+        _mainSplitter.SplitterDistance = 300;
+        _previewSplitter.SplitterDistance = 400;
 
         AddSystemIcons();
     }
