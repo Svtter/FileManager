@@ -69,6 +69,8 @@ static class Program
         void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
         void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszName, int cch);
         void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder pszIconPath, int cch, out int iIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
     }
 
     [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("0000010b-0000-0000-C000-000000000046")]

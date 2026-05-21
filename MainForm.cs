@@ -41,6 +41,7 @@ public partial class MainForm : Form
         InitializeComponents();
         LoadDrives();
         NavigateTo(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
+        Load += (_, _) => SaveIconToFile();
     }
 
     private ContextMenuStrip _fileListContextMenu = null!;
@@ -1032,5 +1033,61 @@ public partial class MainForm : Form
         using var ms = new MemoryStream();
         bmp.Save(ms, System.Drawing.Imaging.ImageFormat.Png);
         return ms.ToArray();
+    }
+
+    private void SaveIconToFile()
+    {
+        try
+        {
+            var exeDir = Path.GetDirectoryName(Environment.ProcessPath!)!;
+            var icoPath = Path.Combine(exeDir, "app.ico");
+            if (!File.Exists(icoPath))
+            {
+                using var fs = new FileStream(icoPath, FileMode.Create);
+                Icon.Save(fs);
+            }
+
+            var lnkPath = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                "Microsoft", "Windows", "Start Menu", "Programs", "FileManager.lnk");
+            if (!File.Exists(lnkPath)) return;
+
+            var shl = (IShellLinkForIcon)new ShellLinkForIcon();
+            var persistFile = (IPersistFileForIcon)shl;
+            persistFile.Load(lnkPath, 2);
+            shl.SetIconLocation(icoPath, 0);
+            persistFile.Save(lnkPath, false);
+            Marshal.ReleaseComObject(shl);
+        }
+        catch { }
+    }
+
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    private class ShellLinkForIcon;
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("000214F9-0000-0000-C000-000000000046")]
+    private interface IShellLinkForIcon
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszFile, int cch, IntPtr pfd, uint fFlags);
+        void SetPath([MarshalAs(UnmanagedType.LPWStr)] string pszFile);
+        void GetArguments([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszArgs, int cch);
+        void SetArguments([MarshalAs(UnmanagedType.LPWStr)] string pszArgs);
+        void GetWorkingDirectory([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszDir, int cch);
+        void SetWorkingDirectory([MarshalAs(UnmanagedType.LPWStr)] string pszDir);
+        void GetDescription([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszName, int cch);
+        void SetDescription([MarshalAs(UnmanagedType.LPWStr)] string pszName);
+        void GetIconLocation([Out, MarshalAs(UnmanagedType.LPWStr)] System.Text.StringBuilder pszIconPath, int cch, out int iIcon);
+        void SetIconLocation([MarshalAs(UnmanagedType.LPWStr)] string pszIconPath, int iIcon);
+    }
+
+    [ComImport, InterfaceType(ComInterfaceType.InterfaceIsIUnknown), Guid("0000010b-0000-0000-C000-000000000046")]
+    private interface IPersistFileForIcon
+    {
+        void GetClassID(out Guid pClassID);
+        void IsDirty();
+        void Load([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, uint dwMode);
+        void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
+        void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
+        void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
     }
 }
