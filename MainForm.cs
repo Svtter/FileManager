@@ -275,14 +275,25 @@ public partial class MainForm : Form
         }
         else if (File.Exists(path))
         {
-            try
+            OpenFileWithShell(path);
+        }
+    }
+
+    private static void OpenFileWithShell(string path)
+    {
+        var dir = Path.GetDirectoryName(path) ?? "";
+        var result = ShellExecute(IntPtr.Zero, "open", path, null, dir, SW_SHOW);
+        if (result.ToInt32() <= 32)
+        {
+            var msg = result.ToInt32() switch
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"无法打开文件: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
+                2 => "找不到指定的文件",
+                3 => "找不到指定的路径",
+                5 => "访问被拒绝",
+                31 => "没有关联的应用程序",
+                _ => $"错误代码: {result.ToInt32()}"
+            };
+            MessageBox.Show($"无法打开文件: {msg}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
@@ -782,27 +793,7 @@ public partial class MainForm : Form
 
     private void FileListView_DoubleClick(object? sender, EventArgs e)
     {
-        if (_fileListView.SelectedItems.Count == 0) return;
-
-        var selected = _fileListView.SelectedItems[0];
-        var path = selected.Tag as string;
-        if (path == null) return;
-
-        if (Directory.Exists(path))
-        {
-            NavigateTo(path);
-        }
-        else if (File.Exists(path))
-        {
-            try
-            {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(path) { UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                MessageBox.Show($"无法打开文件: {ex.Message}", "错误", MessageBoxButtons.OK, MessageBoxIcon.Error);
-            }
-        }
+        OpenSelectedItem();
     }
 
     private void PreviewImage(string filePath)
