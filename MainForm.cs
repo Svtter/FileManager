@@ -8,6 +8,8 @@ public partial class MainForm : Form
     private readonly List<string> _navigationHistory = new();
     private int _historyIndex = -1;
     private string? _currentPath;
+    private int _sortColumn = -1;
+    private SortOrder _sortOrder = SortOrder.None;
 
     private TextBox _addressBar = null!;
     private TreeView _treeView = null!;
@@ -154,6 +156,7 @@ public partial class MainForm : Form
         _fileListView.SelectedIndexChanged += FileListView_SelectedIndexChanged;
         _fileListView.DoubleClick += FileListView_DoubleClick;
         _fileListView.MouseUp += FileListView_MouseUp;
+        _fileListView.ColumnClick += FileListView_ColumnClick;
 
         _treeView = new TreeView
         {
@@ -254,6 +257,19 @@ public partial class MainForm : Form
             _fileListView.SelectedItems.Clear();
             _backgroundContextMenu.Show(_fileListView, e.Location);
         }
+    }
+
+    private void FileListView_ColumnClick(object? sender, ColumnClickEventArgs e)
+    {
+        if (_sortColumn == e.Column)
+            _sortOrder = _sortOrder == SortOrder.Ascending ? SortOrder.Descending : SortOrder.Ascending;
+        else
+        {
+            _sortColumn = e.Column;
+            _sortOrder = SortOrder.Ascending;
+        }
+
+        _fileListView.ListViewItemSorter = new ListViewItemComparer(e.Column, _sortOrder);
     }
 
     private void TreeView_NodeMouseClick(object? sender, TreeNodeMouseClickEventArgs e)
@@ -1189,5 +1205,51 @@ public partial class MainForm : Form
         void Save([MarshalAs(UnmanagedType.LPWStr)] string pszFileName, [MarshalAs(UnmanagedType.Bool)] bool fRemember);
         void SaveCompleted([MarshalAs(UnmanagedType.LPWStr)] string pszFileName);
         void GetCurFile([MarshalAs(UnmanagedType.LPWStr)] out string ppszFileName);
+    }
+
+    private class ListViewItemComparer(int column, SortOrder order) : System.Collections.IComparer
+    {
+        public int Compare(object? x, object? y)
+        {
+            if (x is not ListViewItem a || y is not ListViewItem b) return 0;
+
+            int result;
+
+            if (column == 0)
+            {
+                bool aDir = Directory.Exists(a.Tag as string);
+                bool bDir = Directory.Exists(b.Tag as string);
+                if (aDir != bDir) return aDir ? -1 : 1;
+
+                result = string.Compare(a.Text, b.Text, StringComparison.OrdinalIgnoreCase);
+            }
+            else if (column == 1)
+            {
+                result = ParseSize(a.SubItems[1].Text).CompareTo(ParseSize(b.SubItems[1].Text));
+            }
+            else if (column == 3)
+            {
+                result = DateTime.Compare(
+                    DateTime.TryParse(a.SubItems[3].Text, out var da) ? da : DateTime.MinValue,
+                    DateTime.TryParse(b.SubItems[3].Text, out var db) ? db : DateTime.MinValue);
+            }
+            else
+            {
+                result = string.Compare(
+                    a.SubItems[column].Text, b.SubItems[column].Text, StringComparison.OrdinalIgnoreCase);
+            }
+
+            return order == SortOrder.Descending ? -result : result;
+        }
+
+        private static long ParseSize(string s)
+        {
+            if (string.IsNullOrWhiteSpace(s)) return -1;
+            var parts = s.Split(' ', 2);
+            if (!double.TryParse(parts[0], out var val)) return 0;
+            var unit = parts.Length > 1 ? parts[1].Trim() : "B";
+            var mul = unit switch { "KB" => 1024, "MB" => 1024 * 1024, "GB" => 1024L * 1024 * 1024, "TB" => 1024L * 1024 * 1024 * 1024, _ => 1 };
+            return (long)(val * mul);
+        }
     }
 }
