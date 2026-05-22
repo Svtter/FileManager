@@ -11,6 +11,8 @@ public partial class MainForm : Form
     private int _sortColumn = -1;
     private SortOrder _sortOrder = SortOrder.None;
 
+    private readonly FolderMetaService _metaService;
+
     private TextBox _addressBar = null!;
     private TreeView _treeView = null!;
     private ListView _fileListView = null!;
@@ -24,6 +26,11 @@ public partial class MainForm : Form
     private ToolStripButton _backButton = null!;
     private ToolStripButton _forwardButton = null!;
     private ToolStripButton _upButton = null!;
+    private ToolStripComboBox _categoryFilterCombo = null!;
+    private ToolStripComboBox _tagFilterCombo = null!;
+
+    private string? _activeCategoryFilter;
+    private string? _activeTagFilter;
 
     private static readonly HashSet<string> ImageExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -40,6 +47,8 @@ public partial class MainForm : Form
     public MainForm()
     {
         _fileIcons = new ImageList { ImageSize = new Size(16, 16), ColorDepth = ColorDepth.Depth32Bit };
+        var appDir = Path.GetDirectoryName(Environment.ProcessPath!)!;
+        _metaService = new FolderMetaService(appDir);
         InitializeComponents();
         LoadDrives();
         NavigateTo(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
@@ -85,13 +94,34 @@ public partial class MainForm : Form
 
         var addressItem = new ToolStripControlHost(_addressBar) { AutoSize = false };
 
+        _categoryFilterCombo = new ToolStripComboBox("categoryFilter") { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+        _tagFilterCombo = new ToolStripComboBox("tagFilter") { Width = 120, DropDownStyle = ComboBoxStyle.DropDownList };
+        var manageBtn = new ToolStripButton("管理分类标签");
+        manageBtn.Click += (_, _) =>
+        {
+            using var dlg = new CategoryTagDialog(_metaService);
+            dlg.ShowDialog(this);
+            RefreshFilterComboBoxes();
+            ApplyFilter();
+            if (_currentPath != null) LoadFiles(_currentPath);
+        };
+
         toolbar.Items.AddRange(new ToolStripItem[]
         {
             _backButton, _forwardButton, _upButton,
             new ToolStripSeparator(),
             addressItem,
-            goButton
+            goButton,
+            new ToolStripSeparator(),
+            new ToolStripLabel("分类:"),
+            _categoryFilterCombo,
+            new ToolStripLabel("标签:"),
+            _tagFilterCombo,
+            manageBtn
         });
+        RefreshFilterComboBoxes();
+        _categoryFilterCombo.SelectedIndexChanged += (_, _) => ApplyFilter();
+        _tagFilterCombo.SelectedIndexChanged += (_, _) => ApplyFilter();
         toolbar.Resize += (_, _) =>
         {
             int totalButtonsWidth = 0;
@@ -150,7 +180,8 @@ public partial class MainForm : Form
         };
         _fileListView.Columns.Add("名称", 300);
         _fileListView.Columns.Add("大小", 100);
-        _fileListView.Columns.Add("类型", 150);
+        _fileListView.Columns.Add("类型", 120);
+        _fileListView.Columns.Add("标签", 150);
         _fileListView.Columns.Add("修改日期", 180);
         _fileListView.SmallImageList = _fileIcons;
         _fileListView.SelectedIndexChanged += FileListView_SelectedIndexChanged;
@@ -214,6 +245,9 @@ public partial class MainForm : Form
         _fileListContextMenu.Items.Add(new ToolStripSeparator());
         _fileListContextMenu.Items.Add("复制路径", null, (_, _) => CopySelectedItemPath());
         _fileListContextMenu.Items.Add(new ToolStripSeparator());
+        _fileListContextMenu.Items.Add(CreateCategorySubMenu(() => GetSelectedFilePath()));
+        _fileListContextMenu.Items.Add(CreateTagSubMenu(() => GetSelectedFilePath()));
+        _fileListContextMenu.Items.Add(new ToolStripSeparator());
         _fileListContextMenu.Items.Add("重命名", null, (_, _) => RenameSelectedItem());
         _fileListContextMenu.Items.Add("删除", null, (_, _) => DeleteSelectedItem());
         _fileListContextMenu.Items.Add(new ToolStripSeparator());
@@ -223,8 +257,20 @@ public partial class MainForm : Form
         _treeContextMenu.Items.Add("展开全部", null, (_, _) => ExpandAllTreeNode());
         _treeContextMenu.Items.Add("折叠全部", null, (_, _) => CollapseAllTreeNode());
         _treeContextMenu.Items.Add(new ToolStripSeparator());
+        _treeContextMenu.Items.Add(CreateCategorySubMenu(() => GetTreeViewSelectedPath()));
+        _treeContextMenu.Items.Add(CreateTagSubMenu(() => GetTreeViewSelectedPath()));
+        _treeContextMenu.Items.Add(new ToolStripSeparator());
         _treeContextMenu.Items.Add("新建文件夹", null, (_, _) => CreateNewFolder(GetTreeViewSelectedPath()));
         _treeContextMenu.Items.Add("粘贴", null, (_, _) => PasteToTreeSelectedDirectory());
+        _treeContextMenu.Items.Add(new ToolStripSeparator());
+        _treeContextMenu.Items.Add("管理分类和标签...", null, (_, _) =>
+        {
+            using var dlg = new CategoryTagDialog(_metaService);
+            dlg.ShowDialog(this);
+            RefreshFilterComboBoxes();
+            ApplyFilter();
+            if (_currentPath != null) LoadFiles(_currentPath);
+        });
         _treeContextMenu.Items.Add(new ToolStripSeparator());
         _treeContextMenu.Items.Add("刷新", null, (_, _) => RefreshTreeView());
 
@@ -236,6 +282,169 @@ public partial class MainForm : Form
         _backgroundContextMenu.Items.Add("在终端中打开", null, (_, _) => OpenTerminal());
         _backgroundContextMenu.Items.Add(new ToolStripSeparator());
         _backgroundContextMenu.Items.Add("刷新", null, (_, _) => RefreshFileList());
+    }
+
+    private ToolStripMenuItem CreateCategorySubMenu(Func<string?> getFolderPath)
+    {
+        var menu = new ToolStripMenuItem("分类");
+        menu.DropDownOpening += (_, _) =>
+        {
+            menu.DropDownItems.Clear();
+            var path = getFolderPath();
+            if (path == null || !Directory.Exists(path)) return;
+            foreach (var cat in _metaService.GetCategories())
+            {
+                var assigned = _metaService.FolderMatchesCategory(path, cat.Id);
+                var item = new ToolStripMenuItem(cat.Name) { Checked = assigned, Tag = cat.Id };
+                var catId = cat.Id;
+                var folderPath = path;
+                item.Click += (_, _) =>
+                {
+                    if (_metaService.FolderMatchesCategory(folderPath, catId))
+                        _metaService.RemoveCategory(folderPath, catId);
+                    else
+                        _metaService.AssignCategory(folderPath, catId);
+                    RefreshFilterComboBoxes();
+                    if (_currentPath != null) LoadFiles(_currentPath);
+                    ApplyFilter();
+                };
+                menu.DropDownItems.Add(item);
+            }
+            if (menu.DropDownItems.Count == 0)
+                menu.DropDownItems.Add(new ToolStripMenuItem("(无分类)") { Enabled = false });
+        };
+        return menu;
+    }
+
+    private ToolStripMenuItem CreateTagSubMenu(Func<string?> getFolderPath)
+    {
+        var menu = new ToolStripMenuItem("标签");
+        menu.DropDownOpening += (_, _) =>
+        {
+            menu.DropDownItems.Clear();
+            var path = getFolderPath();
+            if (path == null || !Directory.Exists(path)) return;
+            foreach (var tag in _metaService.GetTags())
+            {
+                var assigned = _metaService.FolderMatchesTag(path, tag.Id);
+                var item = new ToolStripMenuItem(tag.Name) { Checked = assigned, Tag = tag.Id };
+                var tagId = tag.Id;
+                var folderPath = path;
+                item.Click += (_, _) =>
+                {
+                    if (_metaService.FolderMatchesTag(folderPath, tagId))
+                        _metaService.RemoveFolderTag(folderPath, tagId);
+                    else
+                        _metaService.AddFolderTag(folderPath, tagId);
+                    RefreshFilterComboBoxes();
+                    if (_currentPath != null) LoadFiles(_currentPath);
+                };
+                menu.DropDownItems.Add(item);
+            }
+            if (menu.DropDownItems.Count == 0)
+                menu.DropDownItems.Add(new ToolStripMenuItem("(无标签)") { Enabled = false });
+        };
+        return menu;
+    }
+
+    private void RefreshFilterComboBoxes()
+    {
+        var prevCat = _categoryFilterCombo.SelectedIndex > 0 ? _metaService.GetCategories().ElementAtOrDefault(_categoryFilterCombo.SelectedIndex - 1)?.Id : null;
+        var prevTag = _tagFilterCombo.SelectedIndex > 0 ? _metaService.GetTags().ElementAtOrDefault(_tagFilterCombo.SelectedIndex - 1)?.Id : null;
+
+        _categoryFilterCombo.Items.Clear();
+        _categoryFilterCombo.Items.Add("全部");
+        foreach (var cat in _metaService.GetCategories())
+            _categoryFilterCombo.Items.Add(cat.Name);
+        _categoryFilterCombo.SelectedIndex = 0;
+
+        _tagFilterCombo.Items.Clear();
+        _tagFilterCombo.Items.Add("全部");
+        foreach (var tag in _metaService.GetTags())
+            _tagFilterCombo.Items.Add(tag.Name);
+        _tagFilterCombo.SelectedIndex = 0;
+
+        if (prevCat != null)
+        {
+            var idx = _metaService.GetCategories().ToList().FindIndex(c => c.Id == prevCat);
+            if (idx >= 0) _categoryFilterCombo.SelectedIndex = idx + 1;
+        }
+        if (prevTag != null)
+        {
+            var idx = _metaService.GetTags().ToList().FindIndex(t => t.Id == prevTag);
+            if (idx >= 0) _tagFilterCombo.SelectedIndex = idx + 1;
+        }
+    }
+
+    private void ApplyFilter()
+    {
+        _activeCategoryFilter = _categoryFilterCombo.SelectedIndex > 0
+            ? _metaService.GetCategories().ElementAtOrDefault(_categoryFilterCombo.SelectedIndex - 1)?.Id
+            : null;
+        _activeTagFilter = _tagFilterCombo.SelectedIndex > 0
+            ? _metaService.GetTags().ElementAtOrDefault(_tagFilterCombo.SelectedIndex - 1)?.Id
+            : null;
+        ApplyTreeFilter();
+        if (_currentPath != null) LoadFiles(_currentPath);
+    }
+
+    private void ApplyTreeFilter()
+    {
+        if (_treeView == null || _treeView.IsDisposed) return;
+        _treeView.BeginUpdate();
+        ApplyTreeFilterRecursive(_treeView.Nodes);
+        _treeView.EndUpdate();
+    }
+
+    private bool ApplyTreeFilterRecursive(TreeNodeCollection nodes)
+    {
+        bool anyChildVisible = false;
+        foreach (TreeNode node in nodes)
+        {
+            if (node.Tag as string == "placeholder") continue;
+
+            var path = node.Tag as string;
+            bool hasMatchingDescendant = false;
+
+            if (node.Nodes.Count > 0)
+                hasMatchingDescendant = ApplyTreeFilterRecursive(node.Nodes);
+
+            bool selfMatch = false;
+            if (path != null && Directory.Exists(path))
+                selfMatch = _metaService.FolderMatchesAnyFilter(path, _activeCategoryFilter, _activeTagFilter);
+
+            if (_activeCategoryFilter == null && _activeTagFilter == null)
+            {
+                node.ForeColor = Color.Empty;
+                node.BackColor = Color.Empty;
+            }
+
+            if (hasMatchingDescendant || selfMatch || (_activeCategoryFilter == null && _activeTagFilter == null))
+            {
+                node.ForeColor = Color.Empty;
+                if (path != null && Directory.Exists(path) && _activeCategoryFilter == null && _activeTagFilter == null)
+                {
+                    var meta = _metaService.GetFolderMeta(path);
+                    if (meta != null && meta.CategoryIds.Count > 0)
+                    {
+                        var cat = _metaService.GetCategories().FirstOrDefault(c => c.Id == meta.CategoryIds[0]);
+                        if (cat != null)
+                            node.BackColor = ColorTranslator.FromHtml(cat.Color);
+                    }
+                    else
+                    {
+                        node.BackColor = Color.Empty;
+                    }
+                }
+                anyChildVisible = true;
+            }
+            else
+            {
+                node.ForeColor = SystemColors.GrayText;
+                node.BackColor = Color.Empty;
+            }
+        }
+        return anyChildVisible;
     }
 
     private void FileListView_MouseUp(object? sender, MouseEventArgs e)
@@ -678,11 +887,36 @@ public partial class MainForm : Form
                     var dirInfo = new DirectoryInfo(dir);
                     var child = new TreeNode(dirInfo.Name, folderIdx, folderOpenIdx) { Tag = dir };
                     child.Nodes.Add(new TreeNode("...") { Tag = "placeholder" });
+
+                    if (_activeCategoryFilter != null || _activeTagFilter != null)
+                    {
+                        if (!_metaService.FolderMatchesAnyFilter(dir, _activeCategoryFilter, _activeTagFilter))
+                        {
+                            var hasMatchingChild = Directory.Exists(dir) && Directory.GetDirectories(dir).Any(sub =>
+                                _metaService.FolderMatchesAnyFilter(sub, _activeCategoryFilter, _activeTagFilter));
+                            child.ForeColor = hasMatchingChild ? Color.Empty : SystemColors.GrayText;
+                        }
+                    }
+
+                    ApplyCategoryColorToNode(child);
                     node.Nodes.Add(child);
                 }
             }
             catch (UnauthorizedAccessException) { }
             catch { }
+        }
+    }
+
+    private void ApplyCategoryColorToNode(TreeNode node)
+    {
+        var path = node.Tag as string;
+        if (path == null) return;
+        var meta = _metaService.GetFolderMeta(path);
+        if (meta != null && meta.CategoryIds.Count > 0)
+        {
+            var cat = _metaService.GetCategories().FirstOrDefault(c => c.Id == meta.CategoryIds[0]);
+            if (cat != null)
+                node.BackColor = ColorTranslator.FromHtml(cat.Color);
         }
     }
 
@@ -743,7 +977,28 @@ public partial class MainForm : Form
                     var item = new ListViewItem(dir.Name, folderIdx) { Tag = dir.FullName };
                     item.SubItems.Add("");
                     item.SubItems.Add("文件夹");
+
+                    var meta = _metaService.GetFolderMeta(dir.FullName);
+                    var tagNames = meta != null
+                        ? string.Join(", ", meta.TagIds.Select(tid => _metaService.GetTags().FirstOrDefault(t => t.Id == tid)?.Name).Where(n => n != null))
+                        : "";
+                    item.SubItems.Add(tagNames);
+
                     item.SubItems.Add(dir.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"));
+
+                    if (meta != null && meta.CategoryIds.Count > 0)
+                    {
+                        var cat = _metaService.GetCategories().FirstOrDefault(c => c.Id == meta.CategoryIds[0]);
+                        if (cat != null)
+                            item.BackColor = ColorTranslator.FromHtml(cat.Color);
+                    }
+
+                    if (_activeCategoryFilter != null || _activeTagFilter != null)
+                    {
+                        if (!_metaService.FolderMatchesAnyFilter(dir.FullName, _activeCategoryFilter, _activeTagFilter))
+                            continue;
+                    }
+
                     _fileListView.Items.Add(item);
                 }
                 catch { }
@@ -759,6 +1014,7 @@ public partial class MainForm : Form
                     var item = new ListViewItem(file.Name, imgIdx) { Tag = file.FullName };
                     item.SubItems.Add(FormatFileSize(file.Length));
                     item.SubItems.Add(GetFileTypeDescription(ext));
+                    item.SubItems.Add("");
                     item.SubItems.Add(file.LastWriteTime.ToString("yyyy-MM-dd HH:mm:ss"));
                     _fileListView.Items.Add(item);
                 }
@@ -1227,11 +1483,11 @@ public partial class MainForm : Form
             {
                 result = ParseSize(a.SubItems[1].Text).CompareTo(ParseSize(b.SubItems[1].Text));
             }
-            else if (column == 3)
+            else if (column == 4)
             {
                 result = DateTime.Compare(
-                    DateTime.TryParse(a.SubItems[3].Text, out var da) ? da : DateTime.MinValue,
-                    DateTime.TryParse(b.SubItems[3].Text, out var db) ? db : DateTime.MinValue);
+                    DateTime.TryParse(a.SubItems[4].Text, out var da) ? da : DateTime.MinValue,
+                    DateTime.TryParse(b.SubItems[4].Text, out var db) ? db : DateTime.MinValue);
             }
             else
             {
